@@ -104,9 +104,15 @@ LPS22HBClass LPS22HB(*TELEM_WIRE);
 #endif
 
 #if ENV_INCLUDE_INA3221
-#define TELEM_INA3221_ADDRESS      0x42  // INA3221 3 channel current sensor I2C address
-#define TELEM_INA3221_SHUNT_VALUE  0.100 // most variants will have a 0.1 ohm shunts
+#ifndef TELEM_INA3221_ADDRESS
+#define TELEM_INA3221_ADDRESS   0x42      // INA3221 3 channel current sensor I2C address
+#endif
+#ifndef TELEM_INA3221_SHUNT_VALUE
+#define TELEM_INA3221_SHUNT_VALUE 0.100 // most variants will have a 0.1 ohm shunts
+#endif
+#ifndef TELEM_INA3221_NUM_CHANNELS
 #define TELEM_INA3221_NUM_CHANNELS 3
+#endif
 #include <Adafruit_INA3221.h>
 static Adafruit_INA3221 INA3221;
 #endif
@@ -141,6 +147,12 @@ static Adafruit_MLX90614 MLX90614;
 #define TELEM_VL53L0X_ADDRESS 0x29 // VL53L0X time-of-flight distance sensor I2C address
 #include <Adafruit_VL53L0X.h>
 static Adafruit_VL53L0X VL53L0X;
+#endif
+
+#if ENV_INCLUDE_RAK12035
+#define TELEM_RAK12035_ADDRESS 0x20      // RAK12035 Soil Moisture sensor I2C address
+#include "RAK12035_SoilMoisture.h"
+static RAK12035_SoilMoisture RAK12035;
 #endif
 
 #if ENV_INCLUDE_GPS && defined(RAK_BOARD) && !defined(RAK_WISMESH_TAG)
@@ -372,11 +384,6 @@ bool EnvironmentSensorManager::begin() {
       BME680_initialized = false;
       MESH_DEBUG_PRINTLN("Not a BME680 at address %02X (chip ID: 0x%02X)", TELEM_BME680_ADDRESS, chip_id);
     }
-  } else {
-    BME680_initialized = false;
-    MESH_DEBUG_PRINTLN("No I2C device at address %02X", TELEM_BME680_ADDRESS);
-  }
-#endif
 
 #if ENV_INCLUDE_AHTX0
   // Check if device exists before trying to initialize
@@ -537,7 +544,7 @@ bool EnvironmentSensorManager::begin() {
     }
   } else {
     INA260_initialized = false;
-    MESH_DEBUG_PRINTLN("No I2C device found at address %02X (INA260)", TELEM_INA260_ADDRESS);
+    MESH_DEBUG_PRINTLN("INA260 was not found at I2C address %02X", TELEM_INA260_ADDRESS);
   }
 #endif
 
@@ -608,6 +615,17 @@ bool EnvironmentSensorManager::begin() {
   }
 #endif
 #endif
+
+  #if ENV_INCLUDE_RAK12035
+    RAK12035.setup(*TELEM_WIRE);
+  if (RAK12035.begin(TELEM_RAK12035_ADDRESS)) {
+    MESH_DEBUG_PRINTLN("Found sensor RAK12035 at address: %02X", TELEM_RAK12035_ADDRESS);
+    RAK12035_initialized = true;
+  } else {
+    RAK12035_initialized = false;
+    MESH_DEBUG_PRINTLN("RAK12035 was not found at I2C address %02X", TELEM_RAK12035_ADDRESS);
+  }
+  #endif
 
   return true;
 }
@@ -796,12 +814,43 @@ bool EnvironmentSensorManager::querySensors(uint8_t requester_permissions, Cayen
       telemetry.addAltitude(TELEM_CHANNEL_SELF, BMP085.readAltitude(TELEM_BMP085_SEALEVELPRESSURE_HPA * 100));
     }
 #endif
-  }
+
+#if ENV_INCLUDE_RAK12035
+    if (RAK12035_initialized) {
+
+      // RAK12035 Telemetry is Channel 2
+      telemetry.addTemperature(2, RAK12035.get_sensor_temperature());
+      telemetry.addPercentage(2, RAK12035.get_sensor_moisture());
+
+      // RAK12035 CALIBRATION Telemetry is Channel 3, if enabled
+      #ifdef ENABLE_RAK12035_CALIBRATION
+        // Calibration Data Screen is Channel 3
+        float cap = RAK12035.get_sensor_capacitance();
+        float _wet = RAK12035.get_humidity_full();
+        float _dry = RAK12035.get_humidity_zero();
+
+        telemetry.addFrequency(3, cap);
+        telemetry.addTemperature(3, _wet);
+        telemetry.addPower(3, _dry);
+
+        if (cap > _dry) {
+          RAK12035.set_humidity_zero(cap);
+        }
+
+        if (cap < _wet) {
+          RAK12035.set_humidity_full(cap);
+        }
+    #endif
+    }
+#endif
+
 
 #if ENV_PIN_SDA && ENV_PIN_SCL && defined(ESP32)
-  // Reset error counter als alles goed ging
-  consecutive_errors = 0;
+// Reset error counter als alles goed ging
+consecutive_errors = 0;
 #endif
+
+}
 
   return true;
 }
@@ -999,7 +1048,7 @@ bool EnvironmentSensorManager::gpsIsAwake(uint8_t ioPin) {
     gps_detected = true;
     return true;
   }
-
+  
   pinMode(ioPin, INPUT);
   MESH_DEBUG_PRINTLN("GPS did not init with this IO pin... try the next");
   return false;
@@ -1036,8 +1085,8 @@ void EnvironmentSensorManager::start_gps() {
     _location->begin();
     _location->reset();
 
-#ifndef PIN_GPS_RESET
-    MESH_DEBUG_PRINTLN("Start GPS (no reset pin on this board)");
+#ifndef PIN_GPS_EN
+  MESH_DEBUG_PRINTLN("Start GPS is N/A on this board. Actual GPS state unchanged");
 #endif
   }
 }
@@ -1083,6 +1132,7 @@ void EnvironmentSensorManager::loop() {
   }
 
   _location->loop();
+
   if (millis() > next_gps_update) {
     if (gps_active) {
       static bool last_valid_state = false;
