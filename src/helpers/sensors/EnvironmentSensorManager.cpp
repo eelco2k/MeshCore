@@ -384,6 +384,11 @@ bool EnvironmentSensorManager::begin() {
       BME680_initialized = false;
       MESH_DEBUG_PRINTLN("Not a BME680 at address %02X (chip ID: 0x%02X)", TELEM_BME680_ADDRESS, chip_id);
     }
+  } else {
+    BME680_initialized = false;
+    MESH_DEBUG_PRINTLN("No I2C device found at address %02X (BME680)", TELEM_BME680_ADDRESS);
+  }
+#endif
 
 #if ENV_INCLUDE_AHTX0
   // Check if device exists before trying to initialize
